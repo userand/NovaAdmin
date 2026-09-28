@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { ChevronDown, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
@@ -10,11 +10,26 @@ import type { RouteMenu } from '@/api';
 const visibleItems = (items?: RouteMenu[]) => (items ?? []).filter((m) => m.type !== 'F' && m.visible);
 const containsPath = (item: RouteMenu, pathname: string): boolean =>
   item.path === pathname || visibleItems(item.children).some((c) => containsPath(c, pathname));
+/** 初始展开当前页面所属分组，否则第一个分组 */
+const initialOpenId = (groups: RouteMenu[], pathname: string): number | null =>
+  groups.find((g) => g.children?.length && containsPath(g, pathname))?.id ??
+  groups.find((g) => g.children?.length)?.id ??
+  null;
 
 export default function Sidebar() {
   const menus = useAuthStore((s) => s.menus);
   const { sidebarCollapsed, toggleSidebar } = useUIStore();
   const navigate = useNavigate();
+  const { pathname } = useLocation();
+  const groups = menus.filter((m) => m.type !== 'F' && m.visible);
+
+  // 手风琴：全局仅一个展开的分组
+  const [openId, setOpenId] = useState<number | null>(() => initialOpenId(groups, pathname));
+  // 经标签栏等途径切到其他分组页面时，自动展开对应分组
+  useEffect(() => {
+    const hit = groups.find((g) => g.children?.length && containsPath(g, pathname));
+    if (hit) setOpenId((cur) => (cur === hit.id ? cur : hit.id));
+  }, [pathname, menus]);
 
   return (
     <aside
@@ -44,7 +59,12 @@ export default function Sidebar() {
             .map((menu) => (
               <li key={menu.id}>
                 {menu.children?.length ? (
-                  <GroupMenu item={menu} collapsed={sidebarCollapsed} />
+                  <GroupMenu
+                    item={menu}
+                    collapsed={sidebarCollapsed}
+                    open={menu.id === openId}
+                    onToggle={() => setOpenId((cur) => (cur === menu.id ? null : menu.id))}
+                  />
                 ) : (
                   <MenuLink item={menu} collapsed={sidebarCollapsed} />
                 )}
@@ -88,9 +108,18 @@ function MenuLink({ item, collapsed }: { item: RouteMenu; collapsed?: boolean })
   );
 }
 
-function GroupMenu({ item, collapsed }: { item: RouteMenu; collapsed: boolean }) {
+function GroupMenu({
+  item,
+  collapsed,
+  open,
+  onToggle,
+}: {
+  item: RouteMenu;
+  collapsed: boolean;
+  open: boolean;
+  onToggle: () => void;
+}) {
   const { pathname } = useLocation();
-  const [open, setOpen] = useState(true);
   const navigate = useNavigate();
 
   if (collapsed) {
@@ -120,7 +149,7 @@ function GroupMenu({ item, collapsed }: { item: RouteMenu; collapsed: boolean })
     <div>
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={onToggle}
         className={cn(
           'hover:bg-sidebar-accent hover:text-foreground flex h-9 w-full items-center gap-2.5 rounded-md px-2.5 text-[13.5px] transition-colors',
           containsPath(item, pathname) ? 'text-foreground font-medium' : 'text-muted-foreground',
