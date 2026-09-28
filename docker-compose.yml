@@ -1,0 +1,109 @@
+# Nova Admin · Docker 一键部署
+#
+#   cp .env.example .env        # 按注释填写密码/密钥(必填项不填会直接报错)
+#   docker compose up -d --build
+#   访问 http://localhost:${WEB_PORT}    (默认 80)
+#
+# 结构：  浏览器 → web(Nginx，静态资源 + /api 反代) → server(NestJS) → db(MySQL)
+# 只有 web 对外暴露端口；db、server 仅在容器内网互通。
+
+name: nova-admin
+
+services:
+  # ------------------------------------------------------------------ 数据库
+  db:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请在 .env 中设置 MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: nova_admin            # 与 sql/init.sql 中的库名一致，不要修改
+      MYSQL_USER: ${DB_USER:-nova}          # 应用使用普通账号，不用 root
+      MYSQL_PASSWORD: ${DB_PASS:?请在 .env 中设置 DB_PASS}
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_general_ci
+      - --default-time-zone=+08:00
+    volumes:
+      - db_data:/var/lib/mysql
+      # 仅在数据卷为空(首次启动)时执行：建表 + 种子数据(含会员中心模块)
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    # 需要用客户端工具连库时再打开(只绑定本机回环，避免暴露公网)：
+    # ports:
+    #   - "127.0.0.1:3306:3306"
+
+  # ------------------------------------------------------------------ 后端
+  server:
+    build:
+      context: ./server
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production                  # 生产模式：强制校验密钥，并关闭 debugCode / 微信模拟登录
+      PORT: 3200
+      TZ: Asia/Shanghai
+      TRUST_PROXY: "1"                      # 位于 Nginx 之后：信任一跳代理，才能拿到真实客户端 IP
+
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_USER: ${DB_USER:-nova}
+      DB_PASS: ${DB_PASS:?请在 .env 中设置 DB_PASS}
+      DB_NAME: nova_admin
+      DB_SYNC: "false"
+
+      JWT_SECRET: ${JWT_SECRET:?请在 .env 中设置 JWT_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?请在 .env 中设置 JWT_REFRESH_SECRET}
+      JWT_EXPIRES: ${JWT_EXPIRES:-2h}
+      JWT_REFRESH_EXPIRES: ${JWT_REFRESH_EXPIRES:-7d}
+      APP_JWT_EXPIRES: ${APP_JWT_EXPIRES:-2h}
+      APP_JWT_REFRESH_EXPIRES: ${APP_JWT_REFRESH_EXPIRES:-30d}
+
+      # 同源访问(经 Nginx)不需要 CORS；H5 / 其他域名的前端才需要在这里列出(逗号分隔)
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost}
+      SWAGGER_ENABLED: ${SWAGGER_ENABLED:-false}
+
+      # 会员中心：短信 / 邮件 / 微信。不配置时验证码只写服务端日志(此时会员无法真实收到验证码)
+      SMS_PROVIDER: ${SMS_PROVIDER:-console}
+      ALIYUN_SMS_KEY_ID: ${ALIYUN_SMS_KEY_ID:-}
+      ALIYUN_SMS_KEY_SECRET: ${ALIYUN_SMS_KEY_SECRET:-}
+      ALIYUN_SMS_SIGN_NAME: ${ALIYUN_SMS_SIGN_NAME:-}
+      ALIYUN_SMS_TEMPLATE_CODE: ${ALIYUN_SMS_TEMPLATE_CODE:-}
+      MAIL_HOST: ${MAIL_HOST:-}
+      MAIL_PORT: ${MAIL_PORT:-465}
+      MAIL_SECURE: ${MAIL_SECURE:-true}
+      MAIL_USER: ${MAIL_USER:-}
+      MAIL_PASS: ${MAIL_PASS:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+      WECHAT_MP_APPID: ${WECHAT_MP_APPID:-}
+      WECHAT_MP_SECRET: ${WECHAT_MP_SECRET:-}
+      WECHAT_APP_APPID: ${WECHAT_APP_APPID:-}
+      WECHAT_APP_SECRET: ${WECHAT_APP_SECRET:-}
+      WECHAT_H5_APPID: ${WECHAT_H5_APPID:-}
+      WECHAT_H5_SECRET: ${WECHAT_H5_SECRET:-}
+    volumes:
+      - uploads:/app/uploads                # 上传文件(头像等)持久化
+    expose:
+      - "3200"
+
+  # ------------------------------------------------------------------ 前端 + 网关
+  web:
+    build:
+      context: ./web
+    restart: unless-stopped
+    depends_on:
+      server:
+        condition: service_healthy
+    ports:
+      - "${WEB_PORT:-80}:80"
+
+volumes:
+  db_data:
+  uploads:

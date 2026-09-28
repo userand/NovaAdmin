@@ -1,0 +1,7 @@
+node_modules
+dist
+.env
+.env.*
+*.tsbuildinfo
+vite.test.config.ts
+.git
